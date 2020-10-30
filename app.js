@@ -4,18 +4,141 @@ const path = require('path');
 const BodyParser = require("body-parser");
 const Bcrypt = require("bcryptjs");
 dotenv.config();
+var multer = require('multer');
+var upload = multer(); 
+
+var cookieParser = require('cookie-parser');
+var session = require('express-session');
+
 const app = express();
 const mongoose = require('mongoose');
 app.set('view engine', 'ejs');
+
 app.use(express.urlencoded({
     extended: true
 }));
 app.use(BodyParser.json());
 app.use(BodyParser.urlencoded({ extend: true }));
 app.use(express.static('/public'));
+app.use(cookieParser());
+app.use(session({secret: "Shh, its a secret!"}));
+app.use(upload.array());
+
+const user = require('./models/user');
+
+const {
+    userJoin,
+    getCurrentUser,
+    userLeave,
+    getRoomUsers
+  } = require('./utils/users');
+
+const server = http.createServer(app);
+const io = socketio(server);
+
+const botName = 'ChatCord Bot';
+
+// Run when client connects
+io.on('connection', socket => {
+  socket.on('joinRoom', ({ username, room }) => {
+    const user = userJoin(socket.id, username, room);
+
+    socket.join(user.room);
+
+    // Welcome current user
+    socket.emit('message', formatMessage(botName, 'Welcome to ChatCord!'));
+
+    // Broadcast when a user connects
+    socket.broadcast
+      .to(user.room)
+      .emit(
+        'message',
+        formatMessage(botName, `${user.username} has joined the chat`)
+      );
+
+    // Send users and room info
+    io.to(user.room).emit('roomUsers', {
+      room: user.room,
+      users: getRoomUsers(user.room)
+    });
+  });
+
+  // Listen for chatMessage
+  socket.on('chatMessage', msg => {
+    const user = getCurrentUser(socket.id);
+
+    io.to(user.room).emit('message', formatMessage(user.username, msg));
+  });
+
+  // Runs when client disconnects
+  socket.on('disconnect', () => {
+    const user = userLeave(socket.id);
+
+    if (user) {
+      io.to(user.room).emit(
+        'message',
+        formatMessage(botName, `${user.username} has left the chat`)
+      );
+
+      // Send users and room info
+      io.to(user.room).emit('roomUsers', {
+        room: user.room,
+        users: getRoomUsers(user.room)
+      });
+    }
+  });
+});
 
 
-const user = require('./models/user')
+
+// const rooms = { };
+
+// app.get('/forum', (req, res) => {
+//     res.render('forum.ejs', { rooms: rooms })
+//   })
+  
+//   app.post('/room', (req, res) => {
+//     if (rooms[req.body.room] != null) {
+//       return res.redirect('/')
+//     }
+//     rooms[req.body.room] = { users: {} }
+//     res.redirect(req.body.room)
+//     // Send message that new room was created
+//     io.emit('room-created', req.body.room)
+//   })
+  
+//   app.get('/:room', (req, res) => {
+//     if (rooms[req.params.room] == null) {
+//       return res.redirect('/')
+//     }
+//     res.render('room', { roomName: req.params.room })
+//   })
+  
+// //server.listen(3000)
+  
+//   io.on('connection', socket => {
+//     socket.on('new-user', (room, name) => {
+//       socket.join(room)
+//       rooms[room].users[socket.id] = name
+//       socket.to(room).broadcast.emit('user-connected', name)
+//     })
+//     socket.on('send-chat-message', (room, message) => {
+//       socket.to(room).broadcast.emit('chat-message', { message: message, name: rooms[room].users[socket.id] })
+//     })
+//     socket.on('disconnect', () => {
+//       getUserRooms(socket).forEach(room => {
+//         socket.to(room).broadcast.emit('user-disconnected', rooms[room].users[socket.id])
+//         delete rooms[room].users[socket.id]
+//       })
+//     })
+//   })
+  
+//   function getUserRooms(socket) {
+//     return Object.entries(rooms).reduce((names, [name, room]) => {
+//       if (room.users[socket.id] != null) names.push(name)
+//       return names
+//     }, [])
+//   }
 
 
 mongoose.connect(process.env.DB_CONNECT, {
@@ -40,20 +163,7 @@ app.get('/signup', (req, res) => {
     res.render('signup.ejs');
 });
 
-/*app.post("/login", (req,res)=>{
-    user.findOne({email:req.body.emailid, password:req.body.password}, function(err,usr)
-    {
-        if(err|| !usr)
-        {
-        console.log("User not found/registered")
-        res.render('signup.ejs');
-        }
-        else{
-        console.log("logged in");
-        }
-       // render notes main page 
-    }
-)}); */
+
 
 app.post("/login", async (request, response) => {
     try {
@@ -71,6 +181,7 @@ app.post("/login", async (request, response) => {
        // response.send({ message: "The username and password combination is correct!" });
         else
             {console.log('yay');
+            //req.session.user = usr;
             response.render('mainpage.ejs');}
     } catch (error) {
         response.status(500).send(error);
@@ -94,6 +205,7 @@ app.route('/signup')
         console.log(req.body)
         try {
             await User.save();
+            //req.session.user = User;
             res.redirect('/mainpage'); // redirect to notes mainpg
         } catch (err) {
             console.log(err);
@@ -101,7 +213,16 @@ app.route('/signup')
         }
     });
 
-
+    // function checkSignIn(req, res){
+    //     if(req.session.user){
+    //       res.redirect('/mainpage');  //If session exists, proceed to page
+    //     } else {
+    //         res.redirect('/'); 
+    //     //    var err = new Error("Not logged in!");
+    //     //    console.log(req.session.user);
+    //     //    console.log(err);  //Error, trying to access unauthorized page!
+    //     }
+    //  }
 
 
 app.get('/signup', (req, res) => {
@@ -109,40 +230,25 @@ app.get('/signup', (req, res) => {
 });
 
 
-app.get('/mainpage', (req,res)=>{
+// app.get('/mainpage', (req,res)=>{
+//     res.render('mainpage.ejs',{id: req.session.user.id});
+// });
+
+
+app.get('/mainpage',  function(req, res){
     res.render('mainpage.ejs');
-});
+ });
 
 
-/*
---------------------------------
-            USE THIS GET METHOD TO TEST THE SIGN UP METHODS
---------------------------------
-            ↓↓↓↓↓↓↓↓↓↓↓↓↓↓
-*/
+ app.use('/protected_page', function(err, req, res, next){
+    console.log(err);
+       //User should be authenticated! Redirect him to log in.
+       res.redirect('/login');
+    });
 
-
-
-app.get('/test',(req, res)=>{
-    note.find({}, (err, note) => {
-        console.log(note);
-        res.send(note);
-    })
-})
-
-
-
-
-// app.get('/test',(req, res)=>{
-//     user.find({}, (err, user) => {
-//         console.log(user);
-//         res.send(user);
-//     })
-// })
-
-
-
-
-/*app.post('/signup',(req,res)=>{
-    res.render('loginsuccessful.ejs');
-});*/
+app.get('/logout', function(req, res){
+        req.session.destroy(function(){
+           console.log("user logged out.")
+        });
+        res.redirect('/');
+     });
